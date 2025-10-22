@@ -205,15 +205,90 @@ def _duration_hours(start, end):
     except Exception:
         return None
 
+# def _flatten_result(result, project, content, task_id):
+#     """Long/normalized rows: one row per availability OR not_available item."""
+#     rows = []
+#     avail = result.get("availability", []) or []
+#     not_av = result.get("not_available", []) or []
+#     reasoning = result.get("reasoning")
+
+#     for i, e in enumerate(avail):
+#         t = e.get("time", {}) if isinstance(e, dict) else {}
+#         start = _fix_timestr(t.get("start"))
+#         end = _fix_timestr(t.get("end"))
+#         is_full = (e.get("availabilityTime") == "fullDay") or (start == "00:00:00" and end in ("23:59:59", "24:00:00"))
+#         rows.append({
+#             "project": project,
+#             "task_id": task_id,
+#             "content": content,
+#             "status": "available",
+#             "date": e.get("date"),
+#             "start": start,
+#             "end": end,
+#             "availabilityTime": e.get("availabilityTime"),
+#             "isFullDay": is_full,
+#             "durationHours": _duration_hours(start, end),
+#             "spanIndex": i,
+#             "reasoning": reasoning,
+#             "raw_json": json.dumps(result, ensure_ascii=False)
+#         })
+
+#     for j, d in enumerate(not_av):
+#         rows.append({
+#             "project": project,
+#             "task_id": task_id,
+#             "content": content,
+#             "status": "not_available",
+#             "date": d,
+#             "start": None,
+#             "end": None,
+#             "availabilityTime": None,
+#             "isFullDay": None,
+#             "durationHours": None,
+#             "spanIndex": j,
+#             "reasoning": reasoning,
+#             "raw_json": json.dumps(result, ensure_ascii=False)
+#         })
+
+#     if not rows:
+#         rows.append({
+#             "project": project,
+#             "task_id": task_id,
+#             "content": content,
+#             "status": "no_parse",
+#             "date": None,
+#             "start": None,
+#             "end": None,
+#             "availabilityTime": None,
+#             "isFullDay": None,
+#             "durationHours": None,
+#             "spanIndex": None,
+#             "reasoning": reasoning or result.get("error"),
+#             "raw_json": json.dumps(result, ensure_ascii=False)
+#         })
+
+#     return pd.DataFrame(rows)
+
 def _flatten_result(result, project, content, task_id):
-    """Long/normalized rows: one row per availability OR not_available item."""
+    """
+    Normalize the WS result into one row per span:
+      - status = 'available'  for items in availability
+      - status = 'not_available' for items in not_available
+    Supports:
+      availability: [{date, time{start,end}, availabilityTime}, ...]
+      not_available: 
+         - ['16-10-2025', ...]  (strings)
+         - [{'date':..., 'time':{...}, 'availabilityTime':...}, ...] (dicts)
+    """
     rows = []
     avail = result.get("availability", []) or []
     not_av = result.get("not_available", []) or []
     reasoning = result.get("reasoning")
 
+    # ----- AVAILABLE -----
     for i, e in enumerate(avail):
-        t = e.get("time", {}) if isinstance(e, dict) else {}
+        e = e or {}
+        t = e.get("time") or {}
         start = _fix_timestr(t.get("start"))
         end = _fix_timestr(t.get("end"))
         is_full = (e.get("availabilityTime") == "fullDay") or (start == "00:00:00" and end in ("23:59:59", "24:00:00"))
@@ -230,26 +305,51 @@ def _flatten_result(result, project, content, task_id):
             "durationHours": _duration_hours(start, end),
             "spanIndex": i,
             "reasoning": reasoning,
-            "raw_json": json.dumps(result, ensure_ascii=False)
+            "raw_json": json.dumps(result, ensure_ascii=False),
         })
 
+    # ----- NOT AVAILABLE -----
     for j, d in enumerate(not_av):
-        rows.append({
-            "project": project,
-            "task_id": task_id,
-            "content": content,
-            "status": "not_available",
-            "date": d,
-            "start": None,
-            "end": None,
-            "availabilityTime": None,
-            "isFullDay": None,
-            "durationHours": None,
-            "spanIndex": j,
-            "reasoning": reasoning,
-            "raw_json": json.dumps(result, ensure_ascii=False)
-        })
+        # Case 1: dict with date/time/availabilityTime
+        if isinstance(d, dict):
+            t = d.get("time") or {}
+            start = _fix_timestr(t.get("start"))
+            end = _fix_timestr(t.get("end"))
+            is_full = (d.get("availabilityTime") == "fullDay") or (start == "00:00:00" and end in ("23:59:59", "24:00:00"))
+            rows.append({
+                "project": project,
+                "task_id": task_id,
+                "content": content,
+                "status": "not_available",
+                "date": d.get("date"),
+                "start": start,
+                "end": end,
+                "availabilityTime": d.get("availabilityTime"),
+                "isFullDay": is_full,
+                "durationHours": _duration_hours(start, end),
+                "spanIndex": j,
+                "reasoning": reasoning,
+                "raw_json": json.dumps(result, ensure_ascii=False),
+            })
+        else:
+            # Case 2: plain string date (keep time empty)
+            rows.append({
+                "project": project,
+                "task_id": task_id,
+                "content": content,
+                "status": "not_available",
+                "date": d,
+                "start": None,
+                "end": None,
+                "availabilityTime": None,
+                "isFullDay": None,
+                "durationHours": None,
+                "spanIndex": j,
+                "reasoning": reasoning,
+                "raw_json": json.dumps(result, ensure_ascii=False),
+            })
 
+    # If neither list had entries, produce a "no_parse" row so the table isn't empty
     if not rows:
         rows.append({
             "project": project,
@@ -264,10 +364,12 @@ def _flatten_result(result, project, content, task_id):
             "durationHours": None,
             "spanIndex": None,
             "reasoning": reasoning or result.get("error"),
-            "raw_json": json.dumps(result, ensure_ascii=False)
+            "raw_json": json.dumps(result, ensure_ascii=False),
         })
 
     return pd.DataFrame(rows)
+
+
 
 def _to_excel(df):
     buffer = BytesIO()
@@ -391,22 +493,22 @@ with tab1:
         key="single_text",
     )
 
-    c1, c2, c3, c4, c5 = st.columns(5)
-    if c1.button("Tomorrow", key="chip1", width="stretch"):
-        st.session_state["single_text"] = "i will be available tomorrow"
-        st.rerun()
-    if c2.button("Tomorrow morning", key="chip2", width="stretch"):
-        st.session_state["single_text"] = "free tomorrow morning"
-        st.rerun()
-    if c3.button("After 3pm", key="chip3", width="stretch"):
-        st.session_state["single_text"] = "tomorrow after 3pm"
-        st.rerun()
-    if c4.button("Full time", key="chip4", width="stretch"):
-        st.session_state["single_text"] = "I am full time"
-        st.rerun()
-    if c5.button("Next week", key="chip5", width="stretch"):
-        st.session_state["single_text"] = "i will be available next week"
-        st.rerun()
+    # c1, c2, c3, c4, c5 = st.columns(5)
+    # if c1.button("Tomorrow", key="chip1", width="stretch"):
+    #     st.session_state["single_text"] = "i will be available tomorrow"
+    #     st.rerun()
+    # if c2.button("Tomorrow morning", key="chip2", width="stretch"):
+    #     st.session_state["single_text"] = "free tomorrow morning"
+    #     st.rerun()
+    # if c3.button("After 3pm", key="chip3", width="stretch"):
+    #     st.session_state["single_text"] = "tomorrow after 3pm"
+    #     st.rerun()
+    # if c4.button("Full time", key="chip4", width="stretch"):
+    #     st.session_state["single_text"] = "I am full time"
+    #     st.rerun()
+    # if c5.button("Next week", key="chip5", width="stretch"):
+    #     st.session_state["single_text"] = "i will be available next week"
+    #     st.rerun()
 
     b1, b2, _ = st.columns([1, 1, 6])
     if b1.button("Parse availability", type="primary", width="stretch"):
