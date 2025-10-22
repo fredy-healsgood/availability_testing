@@ -1,5 +1,4 @@
 .python-version
-pyproject.toml
 .venv
 venv
 main.py
